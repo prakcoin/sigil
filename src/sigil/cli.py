@@ -30,8 +30,14 @@ _PENDING_FILE = ".sigil/pending.json"
 @app.command()
 def scan(
     project: Path = typer.Argument(default=Path("."), help="Path to project root"),
+    detail: bool = typer.Option(False, "--detail", "-d", help="Show all artifacts in full tables"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Show detail for one agent only"),
 ):
-    """Inventory all text artifacts grouped by agent."""
+    """Inventory all text artifacts grouped by agent.
+
+    Default view: one summary row per agent.
+    Use --detail to see every artifact, or --agent <name> to drill into one.
+    """
     artifacts = discover(project)
     inventory = Inventory(artifacts)
 
@@ -39,31 +45,94 @@ def scan(
         console.print("[yellow]No artifacts found.[/yellow]")
         raise typer.Exit()
 
-    for agent_name, agent_artifacts in sorted(inventory.by_agent().items()):
-        table = Table(title=f"[bold cyan]{agent_name}[/bold cyan]", show_lines=False)
-        table.add_column("ID", style="dim", width=10)
-        table.add_column("Type", style="cyan", width=18)
-        table.add_column("File", style="blue")
-        table.add_column("Lines", style="dim", width=8)
-        table.add_column("Preview")
-
-        for a in agent_artifacts:
-            table.add_row(
-                a.id,
-                a.type.value,
-                a.file_path,
-                f"{a.line_start}–{a.line_end}",
-                a.preview(),
-            )
-        console.print(table)
-        console.print()
-
-    console.print(f"[bold]{len(artifacts)}[/bold] artifact(s) across [bold]{len(inventory.agents())}[/bold] agent(s)")
+    if agent:
+        _scan_agent_detail(inventory, agent)
+    elif detail:
+        _scan_full_detail(inventory)
+    else:
+        _scan_summary(inventory)
 
     if not spec_exists(project):
         console.print(
             "\n[yellow]No sigil.yaml found. Run [bold]sigil init[/bold] to create one.[/yellow]"
         )
+
+
+def _scan_summary(inventory: Inventory) -> None:
+    from .core.models import ArtifactType
+    type_order = [
+        ArtifactType.SYSTEM_PROMPT,
+        ArtifactType.TOOL_DESCRIPTION,
+        ArtifactType.HANDLER_PROMPT,
+        ArtifactType.SKILL,
+    ]
+    type_labels = {
+        ArtifactType.SYSTEM_PROMPT:    "sys",
+        ArtifactType.TOOL_DESCRIPTION: "tool",
+        ArtifactType.HANDLER_PROMPT:   "handler",
+        ArtifactType.SKILL:            "skill",
+    }
+
+    table = Table(show_lines=False, box=None, pad_edge=False)
+    table.add_column("Agent", style="bold cyan", min_width=24)
+    for t in type_order:
+        table.add_column(type_labels[t], style="dim", justify="right", width=8)
+    table.add_column("Total", justify="right", width=6)
+
+    for agent_name, arts in sorted(inventory.by_agent().items()):
+        counts = {t: 0 for t in type_order}
+        for a in arts:
+            if a.type in counts:
+                counts[a.type] += 1
+        total = len(arts)
+        table.add_row(
+            agent_name,
+            *[str(counts[t]) if counts[t] else "[dim]–[/dim]" for t in type_order],
+            f"[bold]{total}[/bold]",
+        )
+
+    console.print(table)
+    console.print(
+        f"\n[bold]{len(inventory)}[/bold] artifact(s) across "
+        f"[bold]{len(inventory.agents())}[/bold] agent(s)  "
+        f"[dim]--detail for full view · --agent <name> to drill in[/dim]"
+    )
+
+
+def _scan_full_detail(inventory: Inventory) -> None:
+    for agent_name, agent_artifacts in sorted(inventory.by_agent().items()):
+        _print_agent_table(agent_name, agent_artifacts)
+
+
+def _scan_agent_detail(inventory: Inventory, agent_name: str) -> None:
+    by_agent = inventory.by_agent()
+    # Case-insensitive match
+    matches = {k: v for k, v in by_agent.items() if k.lower() == agent_name.lower()}
+    if not matches:
+        candidates = ", ".join(sorted(by_agent.keys()))
+        console.print(f"[yellow]Agent '{agent_name}' not found. Known agents: {candidates}[/yellow]")
+        raise typer.Exit(1)
+    for name, arts in matches.items():
+        _print_agent_table(name, arts)
+
+
+def _print_agent_table(agent_name: str, artifacts: list) -> None:
+    table = Table(title=f"[bold cyan]{agent_name}[/bold cyan]", show_lines=False)
+    table.add_column("ID", style="dim", width=10)
+    table.add_column("Type", style="cyan", width=18)
+    table.add_column("File", style="blue")
+    table.add_column("Lines", style="dim", width=8)
+    table.add_column("Preview")
+    for a in artifacts:
+        table.add_row(
+            a.id,
+            a.type.value,
+            a.file_path,
+            f"{a.line_start}–{a.line_end}",
+            a.preview(),
+        )
+    console.print(table)
+    console.print()
 
 
 # ---------------------------------------------------------------------------

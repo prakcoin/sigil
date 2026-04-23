@@ -21,16 +21,103 @@ def discover(project_root: Path) -> list[Artifact]:
         if any(part in _SKIP_DIRS for part in py_file.parts):
             continue
         artifacts.extend(_discover_in_file(py_file, project_root))
+
+    # Build skills-dir → agent-name mapping from AgentSkills(skills=...) call sites
+    skills_map = _collect_skills_map(project_root)
+
     for skill_file in sorted(project_root.rglob("SKILL.md")):
         if any(part in _SKIP_DIRS for part in skill_file.parts):
             continue
-        artifact = _discover_skill_file(skill_file, project_root)
+        artifact = _discover_skill_file(skill_file, project_root, skills_map)
         if artifact:
             artifacts.append(artifact)
     return artifacts
 
 
-def _discover_skill_file(skill_file: Path, project_root: Path) -> Optional[Artifact]:
+def _collect_skills_map(project_root: Path) -> dict[str, str]:
+    """Scan Python files for AgentSkills(skills=...) calls.
+
+    Returns a mapping of skill directory path (relative to project_root)
+    to the agent name that registers those skills.
+    e.g. {"src/agents/skills/archive_skills": "archive_assistant"}
+    """
+    result: dict[str, str] = {}
+    for py_file in sorted(project_root.rglob("*.py")):
+        if any(part in _SKIP_DIRS for part in py_file.parts):
+            continue
+        try:
+            source = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        string_vars = _collect_string_vars(tree, source)
+        visitor = _SkillsMapVisitor(py_file, project_root, string_vars)
+        visitor.visit(tree)
+        result.update(visitor.skills_map)
+    return result
+
+
+class _SkillsMapVisitor(ast.NodeVisitor):
+    """Finds AgentSkills(skills=...) calls and maps skill dirs to agent names."""
+
+    def __init__(
+        self,
+        py_file: Path,
+        project_root: Path,
+        string_vars: dict[str, _StringVar],
+    ):
+        self.py_file = py_file
+        self.project_root = project_root
+        self.string_vars = string_vars
+        self.skills_map: dict[str, str] = {}
+        self._ctx: list[tuple[str, str]] = []
+
+    @property
+    def _agent_name(self) -> str:
+        for kind, name in reversed(self._ctx):
+            if kind == "tool":
+                return name
+        for kind, name in reversed(self._ctx):
+            if kind == "class":
+                return name
+        return self.py_file.stem
+
+    def visit_ClassDef(self, node: ast.ClassDef):
+        self._ctx.append(("class", node.name))
+        self.generic_visit(node)
+        self._ctx.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
+        self._ctx.append(("tool" if _has_tool_decorator(node) else "function", node.name))
+        self.generic_visit(node)
+        self._ctx.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Call(self, node: ast.Call):
+        if _call_name(node) == "AgentSkills":
+            for kw in node.keywords:
+                if kw.arg == "skills":
+                    path_str = _extract_string(kw.value)
+                    if not path_str and isinstance(kw.value, ast.Name):
+                        var = self.string_vars.get(kw.value.id)
+                        if var:
+                            path_str = var[0]
+                    if path_str:
+                        resolved = (self.py_file.parent / path_str).resolve()
+                        try:
+                            rel = str(resolved.relative_to(self.project_root.resolve()))
+                            self.skills_map[rel] = self._agent_name
+                        except ValueError:
+                            pass
+        self.generic_visit(node)
+
+
+def _discover_skill_file(
+    skill_file: Path,
+    project_root: Path,
+    skills_map: dict[str, str],
+) -> Optional[Artifact]:
     """Parse a SKILL.md file and return a skill artifact."""
     try:
         text = skill_file.read_text(encoding="utf-8")
@@ -42,8 +129,21 @@ def _discover_skill_file(skill_file: Path, project_root: Path) -> Optional[Artif
         return None
 
     rel_path = str(skill_file.relative_to(project_root))
-    agent_name = _infer_skill_agent(skill_file, project_root)
-    skill_name = name or skill_file.parent.name
+
+    # Walk up the skill file's parents looking for a match in the skills_map
+    agent_name = None
+    for parent in skill_file.parents:
+        try:
+            rel_parent = str(parent.relative_to(project_root))
+        except ValueError:
+            break
+        if rel_parent in skills_map:
+            agent_name = skills_map[rel_parent]
+            break
+    if not agent_name:
+        agent_name = _infer_skill_agent(skill_file, project_root)
+
+    skill_name = name or skill_file.parent.name  # noqa: F841
 
     return Artifact(
         id=make_id(rel_path, "0", "skill"),
