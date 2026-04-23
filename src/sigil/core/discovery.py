@@ -40,6 +40,9 @@ def _collect_skills_map(project_root: Path) -> dict[str, str]:
     Returns a mapping of skill directory path (relative to project_root)
     to the agent name that registers those skills.
     e.g. {"src/agents/skills/archive_skills": "archive_assistant"}
+
+    Handles module-level AgentSkills assignments by tracing which
+    Agent(plugins=[..., var, ...]) consumes them.
     """
     result: dict[str, str] = {}
     for py_file in sorted(project_root.rglob("*.py")):
@@ -51,9 +54,70 @@ def _collect_skills_map(project_root: Path) -> dict[str, str]:
         except (SyntaxError, UnicodeDecodeError):
             continue
         string_vars = _collect_string_vars(tree, source)
-        visitor = _SkillsMapVisitor(py_file, project_root, string_vars)
+        # Pre-compute {call_lineno: var_name} for module-level AgentSkills assignments
+        module_call_vars = {
+            node.value.lineno: node.targets[0].id
+            for node in tree.body
+            if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+                and _call_name(node.value) == "AgentSkills")
+        }
+        visitor = _SkillsMapVisitor(py_file, project_root, string_vars, module_call_vars)
         visitor.visit(tree)
+
+        # Re-attribute module-level AgentSkills vars via Agent(plugins=[..., var, ...])
+        if visitor.module_level_skills:
+            plugin_ctx = _collect_plugin_context(tree, set(visitor.module_level_skills.keys()))
+            for var_name, skill_dir in visitor.module_level_skills.items():
+                result[skill_dir] = plugin_ctx.get(var_name, py_file.stem)
+
         result.update(visitor.skills_map)
+    return result
+
+
+def _collect_plugin_context(tree: ast.Module, var_names: set[str]) -> dict[str, str]:
+    """For each var in var_names, find the agent context of Agent(plugins=[..., var, ...])."""
+    result: dict[str, str] = {}
+
+    class _V(ast.NodeVisitor):
+        def __init__(self):
+            self._ctx: list[tuple[str, str]] = []
+
+        @property
+        def _agent_ctx(self) -> Optional[str]:
+            for kind, name in reversed(self._ctx):
+                if kind == "tool":
+                    return name
+            for kind, name in reversed(self._ctx):
+                if kind == "class":
+                    return name
+            return None
+
+        def visit_ClassDef(self, node: ast.ClassDef):
+            self._ctx.append(("class", node.name))
+            self.generic_visit(node)
+            self._ctx.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef):
+            self._ctx.append(("tool" if _has_tool_decorator(node) else "function", node.name))
+            self.generic_visit(node)
+            self._ctx.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node: ast.Call):
+            ctx = self._agent_ctx
+            if ctx and _call_name(node) == "Agent":
+                for kw in node.keywords:
+                    if kw.arg == "plugins" and isinstance(kw.value, ast.List):
+                        for elt in kw.value.elts:
+                            if isinstance(elt, ast.Name) and elt.id in var_names:
+                                result[elt.id] = ctx
+            self.generic_visit(node)
+
+    _V().visit(tree)
     return result
 
 
@@ -65,11 +129,14 @@ class _SkillsMapVisitor(ast.NodeVisitor):
         py_file: Path,
         project_root: Path,
         string_vars: dict[str, _StringVar],
+        module_call_vars: dict[int, str],
     ):
         self.py_file = py_file
         self.project_root = project_root
         self.string_vars = string_vars
-        self.skills_map: dict[str, str] = {}
+        self.module_call_vars = module_call_vars       # call_lineno → var_name
+        self.skills_map: dict[str, str] = {}          # directly attributed (in context)
+        self.module_level_skills: dict[str, str] = {}  # var_name → skill_dir (needs re-attr)
         self._ctx: list[tuple[str, str]] = []
 
     @property
@@ -81,6 +148,10 @@ class _SkillsMapVisitor(ast.NodeVisitor):
             if kind == "class":
                 return name
         return self.py_file.stem
+
+    @property
+    def _has_context(self) -> bool:
+        return bool(self._ctx)
 
     def visit_ClassDef(self, node: ast.ClassDef):
         self._ctx.append(("class", node.name))
@@ -104,18 +175,29 @@ class _SkillsMapVisitor(ast.NodeVisitor):
                         if var:
                             path_str = var[0]
                     if path_str:
-                        proj_root = self.project_root.resolve()
-                        # Try file-relative first, then project-root-relative
-                        for base in (self.py_file.parent, self.project_root):
-                            resolved = (base / path_str).resolve()
-                            if resolved.exists():
-                                try:
-                                    rel = str(resolved.relative_to(proj_root))
-                                    self.skills_map[rel] = self._agent_name
-                                except ValueError:
-                                    pass
+                        skill_dir = self._resolve_skill_dir(path_str)
+                        if skill_dir:
+                            if self._has_context:
+                                self.skills_map[skill_dir] = self._agent_name
+                            else:
+                                var_name = self.module_call_vars.get(node.lineno)
+                                if var_name:
+                                    self.module_level_skills[var_name] = skill_dir
+                                else:
+                                    self.skills_map[skill_dir] = self.py_file.stem
                                 break
         self.generic_visit(node)
+
+    def _resolve_skill_dir(self, path_str: str) -> Optional[str]:
+        proj_root = self.project_root.resolve()
+        for base in (self.py_file.parent, self.project_root):
+            resolved = (base / path_str).resolve()
+            if resolved.exists():
+                try:
+                    return str(resolved.relative_to(proj_root))
+                except ValueError:
+                    pass
+        return None
 
 
 def _discover_skill_file(
@@ -216,7 +298,57 @@ def _discover_in_file(file_path: Path, project_root: Path) -> list[Artifact]:
     string_vars = _collect_string_vars(tree, source)
     visitor = _ArtifactVisitor(rel_path, source, assignment_map, string_vars)
     visitor.visit(tree)
+
+    # Re-attribute module-level handler prompts to the agent that consumes them
+    # via Agent(plugins=[..., handler_var, ...]).
+    plugin_map = _collect_plugin_agent_map(tree, string_vars)
+    for artifact in visitor.artifacts:
+        if artifact.type == ArtifactType.HANDLER_PROMPT and artifact.line_start in plugin_map:
+            artifact.agent_name = plugin_map[artifact.line_start]
+
     return visitor.artifacts
+
+
+def _collect_plugin_agent_map(
+    tree: ast.Module,
+    string_vars: dict[str, _StringVar],
+) -> dict[int, str]:
+    """Map system_prompt string lineno → agent name for module-level handler assignments.
+
+    Finds patterns like:
+        handler = SomeHandler(system_prompt=PROMPT)   # module level
+        ...
+        Agent(plugins=[handler], ...)                 # inside a class/tool
+    and returns {prompt_lineno: agent_name} so handler artifacts can be
+    re-attributed from the file stem to the real owning agent.
+    """
+    # Step 1: find module-level handler variable assignments and their prompt lineno
+    module_handlers: dict[str, int] = {}  # var_name → system_prompt string lineno
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        if not (_call_name(node.value) or "").endswith("Handler"):
+            continue
+        for kw in node.value.keywords:
+            if kw.arg == "system_prompt":
+                val = kw.value
+                if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                    module_handlers[target.id] = val.lineno
+                elif isinstance(val, ast.Name) and val.id in string_vars:
+                    module_handlers[target.id] = string_vars[val.id][2]  # line_start
+                break
+
+    if not module_handlers:
+        return {}
+
+    # Step 2: re-use _collect_plugin_context, then remap var_name → lineno → agent
+    var_to_agent = _collect_plugin_context(tree, set(module_handlers.keys()))
+    return {lineno: var_to_agent[var] for var, lineno in module_handlers.items() if var in var_to_agent}
 
 
 def _collect_agent_assignments(tree: ast.Module) -> dict[int, str]:
