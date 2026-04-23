@@ -11,6 +11,7 @@ class ArtifactType(str, Enum):
     SYSTEM_PROMPT = "system_prompt"
     TOOL_DESCRIPTION = "tool_description"
     HANDLER_PROMPT = "handler_prompt"
+    SKILL = "skill"
 
 
 class ArtifactRole(str, Enum):

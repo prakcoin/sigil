@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from .models import Artifact, ArtifactRole, ArtifactType, make_id
 
 _SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".sigil"}
@@ -13,13 +15,88 @@ _StringVar = tuple[str, str, int, int]
 
 
 def discover(project_root: Path) -> list[Artifact]:
-    """Walk all Python files under project_root and return discovered artifacts."""
+    """Walk all Python files and SKILL.md files and return discovered artifacts."""
     artifacts: list[Artifact] = []
     for py_file in sorted(project_root.rglob("*.py")):
         if any(part in _SKIP_DIRS for part in py_file.parts):
             continue
         artifacts.extend(_discover_in_file(py_file, project_root))
+    for skill_file in sorted(project_root.rglob("SKILL.md")):
+        if any(part in _SKIP_DIRS for part in skill_file.parts):
+            continue
+        artifact = _discover_skill_file(skill_file, project_root)
+        if artifact:
+            artifacts.append(artifact)
     return artifacts
+
+
+def _discover_skill_file(skill_file: Path, project_root: Path) -> Optional[Artifact]:
+    """Parse a SKILL.md file and return a skill artifact."""
+    try:
+        text = skill_file.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    name, body = _parse_skill_md(text)
+    if not body.strip():
+        return None
+
+    rel_path = str(skill_file.relative_to(project_root))
+    agent_name = _infer_skill_agent(skill_file, project_root)
+    skill_name = name or skill_file.parent.name
+
+    return Artifact(
+        id=make_id(rel_path, "0", "skill"),
+        type=ArtifactType.SKILL,
+        role=ArtifactRole.OWNED_BY,
+        content=body.strip(),
+        file_path=rel_path,
+        line_start=1,
+        line_end=text.count("\n") + 1,
+        agent_name=agent_name,
+        source_segment=body.strip(),  # body only — no Python quotes
+        referenced_agent=None,
+    )
+
+
+def _parse_skill_md(text: str) -> tuple[str, str]:
+    """Return (name, body) from a SKILL.md file.
+
+    Body is everything after the closing frontmatter fence.
+    If there is no frontmatter, the entire text is the body.
+    """
+    if not text.startswith("---"):
+        return "", text
+
+    end = text.find("\n---", 3)
+    if end == -1:
+        return "", text
+
+    try:
+        frontmatter = yaml.safe_load(text[3:end]) or {}
+    except yaml.YAMLError:
+        frontmatter = {}
+
+    name = frontmatter.get("name", "")
+    body = text[end + 4:].lstrip("\n")
+    return name, body
+
+
+def _infer_skill_agent(skill_file: Path, project_root: Path) -> str:
+    """Infer agent name from the skills directory structure.
+
+    Looks for a 'skills' directory in the path and uses its immediate child
+    as the agent group, stripping common suffixes (_skills, -skills).
+    Falls back to the skill's parent directory name.
+
+    e.g. src/agents/skills/archive_skills/look-analysis/SKILL.md → archive
+    """
+    parts = skill_file.relative_to(project_root).parts
+    for i, part in enumerate(parts):
+        if part == "skills" and i + 1 < len(parts):
+            group = parts[i + 1]
+            return group.removesuffix("_skills").removesuffix("-skills")
+    return skill_file.parent.parent.name
 
 
 def _discover_in_file(file_path: Path, project_root: Path) -> list[Artifact]:

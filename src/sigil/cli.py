@@ -248,17 +248,20 @@ def apply(
                 errors += 1
                 continue
 
-            # Detect quote style from the stored source segment and rebuild the literal
-            seg = artifact.source_segment
-            if seg.startswith('"""') or seg.startswith("'''"):
-                quote = seg[:3]
-            elif seg.startswith('"') or seg.startswith("'"):
-                quote = seg[0]
+            if artifact.file_path.endswith(".md"):
+                # SKILL.md: source_segment is plain body text — replace directly
+                new_source = source.replace(artifact.source_segment, change.proposed, 1)
             else:
-                quote = '"'
+                # Python file: source_segment is a quoted string literal — preserve quote style
+                seg = artifact.source_segment
+                if seg.startswith('"""') or seg.startswith("'''"):
+                    quote = seg[:3]
+                elif seg.startswith('"') or seg.startswith("'"):
+                    quote = seg[0]
+                else:
+                    quote = '"'
+                new_source = source.replace(seg, quote + change.proposed + quote, 1)
 
-            new_literal = quote + change.proposed + quote
-            new_source = source.replace(seg, new_literal, 1)
             file_path.write_text(new_source, encoding="utf-8")
 
             console.print(f"[green]Updated[/green] {artifact.file_path}  [dim]{artifact.id}[/dim]")
