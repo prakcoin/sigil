@@ -60,6 +60,8 @@ def scan(
 
 def _scan_summary(inventory: Inventory) -> None:
     from .core.models import ArtifactType
+
+    _AGENT_TYPES = {ArtifactType.SYSTEM_PROMPT, ArtifactType.HANDLER_PROMPT, ArtifactType.SKILL}
     type_order = [
         ArtifactType.SYSTEM_PROMPT,
         ArtifactType.TOOL_DESCRIPTION,
@@ -73,18 +75,25 @@ def _scan_summary(inventory: Inventory) -> None:
         ArtifactType.SKILL:            "skill",
     }
 
+    # Split entries: agents (have sys/handler/skill) vs standalone tools (only tool_description)
+    agent_rows = []
+    standalone_tool_count = 0
+
+    for agent_name, arts in sorted(inventory.by_agent().items()):
+        counts = {t: sum(1 for a in arts if a.type == t) for t in type_order}
+        has_agent_artifacts = any(counts[t] for t in _AGENT_TYPES)
+        if has_agent_artifacts:
+            agent_rows.append((agent_name, counts, len(arts)))
+        else:
+            standalone_tool_count += counts[ArtifactType.TOOL_DESCRIPTION]
+
     table = Table(show_lines=False, box=None, pad_edge=False)
     table.add_column("Agent", style="bold cyan", min_width=24)
     for t in type_order:
         table.add_column(type_labels[t], style="dim", justify="right", width=8)
     table.add_column("Total", justify="right", width=6)
 
-    for agent_name, arts in sorted(inventory.by_agent().items()):
-        counts = {t: 0 for t in type_order}
-        for a in arts:
-            if a.type in counts:
-                counts[a.type] += 1
-        total = len(arts)
+    for agent_name, counts, total in agent_rows:
         table.add_row(
             agent_name,
             *[str(counts[t]) if counts[t] else "[dim]–[/dim]" for t in type_order],
@@ -92,11 +101,18 @@ def _scan_summary(inventory: Inventory) -> None:
         )
 
     console.print(table)
-    console.print(
-        f"\n[bold]{len(inventory)}[/bold] artifact(s) across "
-        f"[bold]{len(inventory.agents())}[/bold] agent(s)  "
-        f"[dim]--detail for full view · --agent <name> to drill in[/dim]"
-    )
+
+    footer_parts = [
+        f"[bold]{len(inventory)}[/bold] artifact(s)",
+        f"[bold]{len(agent_rows)}[/bold] agent(s)",
+    ]
+    if standalone_tool_count:
+        footer_parts.append(
+            f"[dim]{standalone_tool_count} standalone tool(s) hidden — use --detail to see all[/dim]"
+        )
+    else:
+        footer_parts.append("[dim]--detail for full view · --agent <name> to drill in[/dim]")
+    console.print("\n" + "  ·  ".join(footer_parts))
 
 
 def _scan_full_detail(inventory: Inventory) -> None:

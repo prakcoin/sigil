@@ -104,12 +104,17 @@ class _SkillsMapVisitor(ast.NodeVisitor):
                         if var:
                             path_str = var[0]
                     if path_str:
-                        resolved = (self.py_file.parent / path_str).resolve()
-                        try:
-                            rel = str(resolved.relative_to(self.project_root.resolve()))
-                            self.skills_map[rel] = self._agent_name
-                        except ValueError:
-                            pass
+                        proj_root = self.project_root.resolve()
+                        # Try file-relative first, then project-root-relative
+                        for base in (self.py_file.parent, self.project_root):
+                            resolved = (base / path_str).resolve()
+                            if resolved.exists():
+                                try:
+                                    rel = str(resolved.relative_to(proj_root))
+                                    self.skills_map[rel] = self._agent_name
+                                except ValueError:
+                                    pass
+                                break
         self.generic_visit(node)
 
 
@@ -233,25 +238,40 @@ def _collect_agent_assignments(tree: ast.Module) -> dict[int, str]:
 def _collect_string_vars(tree: ast.Module, source: str) -> dict[str, _StringVar]:
     """Map variable name to (value, source_segment, line_start, line_end).
 
-    Handles `PROMPT = "..."` and `PROMPT = \"\"\"...\"\"\"` at any scope.
-    When system_prompt=PROMPT, we resolve to this definition so line numbers
-    and source_segment point at the actual string, not the reference.
+    Handles plain string literals and os.path.join(..., "last/string") assignments.
+    The os.path.join case covers patterns like:
+        path = os.path.join(ROOT_DIR, "src/agents/skills/archive_skills")
+    where we extract the last string argument as the path hint.
     """
     result: dict[str, _StringVar] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
-            if isinstance(target, ast.Name):
-                content = _extract_string(node.value)
-                if content:
-                    segment = ast.get_source_segment(source, node.value) or ""
-                    result[target.id] = (
-                        content,
-                        segment,
-                        node.value.lineno,
-                        node.value.end_lineno,
-                    )
+            if not isinstance(target, ast.Name):
+                continue
+            content = _extract_string(node.value) or _extract_join_last_str(node.value)
+            if content:
+                segment = ast.get_source_segment(source, node.value) or ""
+                result[target.id] = (
+                    content,
+                    segment,
+                    node.value.lineno,
+                    node.value.end_lineno,
+                )
     return result
+
+
+def _extract_join_last_str(node: ast.expr) -> Optional[str]:
+    """Extract the last string literal from an os.path.join(...) call."""
+    if not isinstance(node, ast.Call):
+        return None
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr == "join"):
+        return None
+    for arg in reversed(node.args):
+        s = _extract_string(arg)
+        if s:
+            return s
+    return None
 
 
 def _call_name(node: ast.Call) -> Optional[str]:
