@@ -236,52 +236,62 @@ class _ArtifactVisitor(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def _resolve_prompt(self, value_node: ast.expr) -> Optional[tuple[str, str, int, int]]:
+        """Return (content, source_segment, line_start, line_end) or None if unresolvable."""
+        content = _extract_string(value_node)
+        if content:
+            segment = ast.get_source_segment(self.source, value_node) or ""
+            return content, segment, value_node.lineno, value_node.end_lineno
+        if isinstance(value_node, ast.Name) and value_node.id in self.string_vars:
+            return self.string_vars[value_node.id]
+        return None
+
+    def _resolve_agent_name(self, call_node: ast.Call) -> str:
+        """Resolve the owning agent name for a call node."""
+        for kind, name in reversed(self._ctx):
+            if kind == "tool":
+                return name
+        for k in call_node.keywords:
+            if k.arg == "name":
+                name = _extract_string(k.value)
+                if name:
+                    return name
+        return self.assignment_map.get(call_node.lineno) or self._agent_name
+
     def visit_Call(self, node: ast.Call):
-        if _call_name(node) == "Agent":
+        name = _call_name(node)
+        if not name:
+            self.generic_visit(node)
+            return
+
+        is_agent = name == "Agent"
+        is_handler = not is_agent and name.endswith("Handler")
+
+        if is_agent or is_handler:
             for kw in node.keywords:
                 if kw.arg == "system_prompt":
-                    # Resolve content + source location:
-                    # inline literal takes precedence; variable reference resolves to its definition
-                    content = _extract_string(kw.value)
-                    if content:
-                        segment = ast.get_source_segment(self.source, kw.value) or ""
-                        line_start = kw.value.lineno
-                        line_end = kw.value.end_lineno
-                    elif isinstance(kw.value, ast.Name) and kw.value.id in self.string_vars:
-                        content, segment, line_start, line_end = self.string_vars[kw.value.id]
-                    else:
-                        self.generic_visit(node)
-                        return
-
+                    resolved = self._resolve_prompt(kw.value)
+                    if not resolved:
+                        break
+                    content, segment, line_start, line_end = resolved
                     if not content.strip():
-                        continue
+                        break
 
-                    # Resolve agent name: tool context > name= kwarg > assignment map > context
-                    agent_name = None
-                    for kind, name in reversed(self._ctx):
-                        if kind == "tool":
-                            agent_name = name
-                            break
-                    if not agent_name:
-                        for k in node.keywords:
-                            if k.arg == "name":
-                                agent_name = _extract_string(k.value)
-                                break
-                    if not agent_name:
-                        agent_name = self.assignment_map.get(node.lineno)
-                    if not agent_name:
-                        agent_name = self._agent_name
-
+                    artifact_type = (
+                        ArtifactType.SYSTEM_PROMPT if is_agent
+                        else ArtifactType.HANDLER_PROMPT
+                    )
                     self.artifacts.append(Artifact(
-                        id=make_id(self.rel_path, str(line_start), "system_prompt"),
-                        type=ArtifactType.SYSTEM_PROMPT,
+                        id=make_id(self.rel_path, str(line_start), artifact_type.value),
+                        type=artifact_type,
                         role=ArtifactRole.OWNED_BY,
                         content=content,
                         file_path=self.rel_path,
                         line_start=line_start,
                         line_end=line_end,
-                        agent_name=agent_name,
+                        agent_name=self._resolve_agent_name(node),
                         source_segment=segment,
                     ))
+                    break
 
         self.generic_visit(node)
