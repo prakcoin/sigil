@@ -266,6 +266,8 @@ def _diff_panel(original: str, proposed: str) -> Panel:
 def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
     console.print()
     for i, finding in enumerate(findings):
+        if finding.approved is not None:
+            continue
         header = (
             f"[bold]Finding {i + 1}/{len(findings)}[/bold]  "
             f"[cyan]{finding.category.value}[/cyan]  "
@@ -283,6 +285,7 @@ def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
         choice = typer.prompt(
             "  [y] approve  [n] reject  [s] skip category",
             default="n",
+            show_default=False,
         ).strip().lower()
 
         if choice == "y":
@@ -294,7 +297,6 @@ def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
                 if remaining.category == cat and remaining.approved is None:
                     remaining.approved = False
             console.print(f"  [yellow]Skipped all {cat.value} findings.[/yellow]\n")
-            break
         else:
             finding.approved = False
             console.print("  [dim]Rejected.[/dim]\n")
