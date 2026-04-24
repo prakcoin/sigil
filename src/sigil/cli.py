@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from typing import Optional
 
+import difflib
+
 import typer
 import yaml
-from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -194,7 +195,7 @@ def init(
 @app.command()
 def review(
     project: Path = typer.Argument(default=Path("."), help="Path to project root"),
-    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category: tone|vocabulary|constraints|routing"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category: tone|vocabulary|constraints|routing|flow"),
 ):
     """Run analysis agents and interactively approve or reject findings."""
     from .agents.analyzers import run_analysis
@@ -243,6 +244,25 @@ def review(
         console.print("\nNo findings approved.")
 
 
+def _diff_panel(original: str, proposed: str) -> Panel:
+    orig_lines = original.splitlines(keepends=True)
+    prop_lines = proposed.splitlines(keepends=True)
+    hunks = list(difflib.unified_diff(orig_lines, prop_lines, lineterm=""))
+
+    text = Text()
+    for line in hunks[2:]:  # skip --- / +++ file headers
+        if line.startswith("+"):
+            text.append(line + "\n", style="green")
+        elif line.startswith("-"):
+            text.append(line + "\n", style="red")
+        elif line.startswith("@@"):
+            text.append(line + "\n", style="cyan dim")
+        else:
+            text.append(line + "\n", style="dim")
+
+    return Panel(text, title="diff", border_style="dim")
+
+
 def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
     console.print()
     for i, finding in enumerate(findings):
@@ -257,12 +277,7 @@ def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
             artifact = inventory.get(change.artifact_id)
             label = f"{artifact.agent_name} / {artifact.type.value}" if artifact else change.artifact_id
             console.print(f"  [dim]Artifact:[/dim] {label}")
-            console.print(
-                Columns([
-                    Panel(change.original, title="Before", border_style="red", width=60),
-                    Panel(change.proposed, title="After", border_style="green", width=60),
-                ])
-            )
+            console.print(_diff_panel(change.original, change.proposed))
             console.print(f"  [dim]Reason:[/dim] {change.reasoning}\n")
 
         choice = typer.prompt(
@@ -274,7 +289,6 @@ def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
             finding.approved = True
             console.print("  [green]Approved.[/green]\n")
         elif choice == "s":
-            # Skip remaining findings in this category
             cat = finding.category
             for remaining in findings[i:]:
                 if remaining.category == cat and remaining.approved is None:

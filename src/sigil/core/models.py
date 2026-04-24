@@ -24,6 +24,7 @@ class FindingCategory(str, Enum):
     VOCABULARY = "vocabulary"
     CONSTRAINTS = "constraints"
     ROUTING = "routing"
+    FLOW = "flow"
 
 
 class Severity(str, Enum):

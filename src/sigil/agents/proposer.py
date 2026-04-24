@@ -26,8 +26,9 @@ Return [] if no change is needed. No explanation outside the JSON array.\
 
 def _make_model() -> BedrockModel:
     return BedrockModel(
-        model_id=os.environ.get("SIGIL_MODEL_ID", "us.amazon.nova-lite-v1:0"),
+        model_id=os.environ.get("SIGIL_MODEL_ID", "us.amazon.nova-2-lite-v1:0"),
         temperature=0.0,
+        max_tokens=12000,
     )
 
 
