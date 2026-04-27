@@ -1,0 +1,7 @@
+{
+  "required_categories": ["tone"],
+  "forbidden_categories": [],
+  "min_findings": 1,
+  "max_findings": null,
+  "notes": "Casual tool docstrings and system prompt ('hey', 'lol', 'idk', 'hopefully') should trigger a tone finding."
+}

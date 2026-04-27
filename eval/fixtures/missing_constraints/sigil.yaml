@@ -1,0 +1,9 @@
+tone: >
+  Professional and concise. Use imperative voice for instructions.
+
+vocabulary: []
+
+required_constraints:
+  - "Do not infer, guess, or fabricate information not returned by tools."
+  - "If a tool returns an error or empty result, surface it to the user directly rather than filling in missing data."
+  - "Do not make assumptions about missing or null fields in API responses."

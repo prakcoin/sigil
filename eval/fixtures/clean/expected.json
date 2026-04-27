@@ -1,0 +1,7 @@
+{
+  "required_categories": [],
+  "forbidden_categories": [],
+  "min_findings": 0,
+  "max_findings": 0,
+  "notes": "Well-written artifacts that match the spec. Should produce zero findings."
+}

@@ -1,0 +1,10 @@
+tone: >
+  Professional and direct. Use active voice.
+
+vocabulary:
+  - canonical: "use"
+    avoid: ["utilize", "leverage"]
+  - canonical: "to"
+    avoid: ["in order to"]
+
+required_constraints: []

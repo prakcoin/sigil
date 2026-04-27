@@ -1,0 +1,11 @@
+tone: >
+  Professional and concise. Use imperative voice for guidelines.
+  Avoid hedging, casual expressions, and first-person narration.
+
+vocabulary:
+  - canonical: "use"
+    avoid: ["utilize", "leverage"]
+
+required_constraints:
+  - "Do not infer, fabricate, or guess information not returned by tools."
+  - "If a tool returns an error, surface the error to the user."

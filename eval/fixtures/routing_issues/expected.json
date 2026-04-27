@@ -1,0 +1,7 @@
+{
+  "required_categories": ["routing"],
+  "forbidden_categories": [],
+  "min_findings": 1,
+  "max_findings": null,
+  "notes": "shopping_assistant's system prompt claims general web research capability, contradicting the orchestrator's rule to use research_assistant for research queries."
+}
