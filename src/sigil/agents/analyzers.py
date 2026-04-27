@@ -139,6 +139,9 @@ def run_analysis(inventory: Inventory, spec: Spec) -> list[Finding]:
             for prompt, category in prompts
         }
         for future in as_completed(futures):
-            findings.extend(future.result())
+            try:
+                findings.extend(future.result())
+            except Exception:
+                pass
 
     return findings

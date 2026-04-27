@@ -85,6 +85,9 @@ def generate_proposals(findings: list[Finding], inventory: Inventory) -> list[Fi
         }
         for future in as_completed(futures):
             i = futures[future]
-            findings[i].proposed_changes = future.result()
+            try:
+                findings[i].proposed_changes = future.result()
+            except Exception:
+                pass
 
     return findings
