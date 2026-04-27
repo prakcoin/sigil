@@ -222,11 +222,21 @@ def review(
     console.print(f"Generating proposals for [bold]{len(findings)}[/bold] finding(s)...")
     findings = generate_proposals(findings, inventory)
 
+    actionable = [f for f in findings if f.proposed_changes]
+    filtered = len(findings) - len(actionable)
+    if filtered:
+        console.print(f"[dim]{filtered} finding(s) had no meaningful change proposed — skipped.[/dim]")
+    findings = actionable
+
     if category:
         findings = [f for f in findings if f.category.value == category]
         if not findings:
             console.print(f"[yellow]No findings in category '{category}'.[/yellow]")
             raise typer.Exit()
+
+    if not findings:
+        console.print("[green]No actionable findings.[/green]")
+        raise typer.Exit()
 
     _interactive_review(findings, inventory)
 

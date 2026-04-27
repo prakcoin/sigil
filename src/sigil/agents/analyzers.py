@@ -28,6 +28,10 @@ class _FindingsResult(BaseModel):
 _SHARED_CONTEXT = """\
 You are analyzing text artifacts from an agentic AI system.
 Each artifact has an ID, type, agent name, and content.
+The baseline assumption is that these artifacts are correct and well-written.
+Only flag a finding if you are certain it represents a genuine inconsistency
+across artifacts or a clear violation of the provided spec. Stylistic preferences
+and minor improvements are not findings. If you are in doubt, do not flag.
 Return an empty findings list if you find no issues.\
 """
 
