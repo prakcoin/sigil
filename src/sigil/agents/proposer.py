@@ -1,26 +1,37 @@
 from __future__ import annotations
 
-import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from pydantic import BaseModel
 from strands import Agent
 from strands.models import BedrockModel
 
 from ..core.inventory import Inventory
 from ..core.models import Finding, ProposedChange
 
+
+class _ChangeItem(BaseModel):
+    artifact_id: str
+    original: str
+    proposed: str
+    reasoning: str
+
+
+class _ChangesResult(BaseModel):
+    changes: list[_ChangeItem]
+
+
 _SYSTEM_PROMPT = """\
 You are a technical editor improving text artifacts in an agentic AI system.
 Given a finding and the affected artifacts, propose specific text changes.
 
-Respond ONLY with a JSON array. Each element must have:
-  - "artifact_id": the artifact ID to change
-  - "original": the EXACT current content of that artifact (copy verbatim)
-  - "proposed": your improved version
-  - "reasoning": one sentence explaining the change
+Make the minimum edit needed to fix the inconsistency. Prefer rewording existing
+text over adding new content. Do not add new sentences, paragraphs, or sections
+unless the finding explicitly identifies missing required content (e.g. a required
+constraint that is absent from an agent).
 
-Return [] if no change is needed. No explanation outside the JSON array.\
+Return an empty changes list if no change is needed.\
 """
 
 
@@ -49,26 +60,18 @@ def _propose_for_finding(finding: Finding, inventory: Inventory) -> list[Propose
     )
 
     agent = Agent(system_prompt=_SYSTEM_PROMPT, model=_make_model(), callback_handler=None)
-    raw = str(agent(prompt)).strip()
-
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-    try:
-        items = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
+    result = agent(prompt, structured_output_model=_ChangesResult)
+    items = result.structured_output.changes if result.structured_output else []
 
     changes: list[ProposedChange] = []
     for item in items:
-        artifact = inventory.get(item.get("artifact_id", ""))
-        if artifact is None:
+        if inventory.get(item.artifact_id) is None:
             continue
         changes.append(ProposedChange(
-            artifact_id=item["artifact_id"],
-            original=item["original"],
-            proposed=item["proposed"],
-            reasoning=item.get("reasoning", ""),
+            artifact_id=item.artifact_id,
+            original=item.original,
+            proposed=item.proposed,
+            reasoning=item.reasoning,
         ))
     return changes
 

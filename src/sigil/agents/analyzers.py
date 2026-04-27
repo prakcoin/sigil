@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from pydantic import BaseModel
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -13,16 +13,22 @@ from ..core.inventory import Inventory
 from ..core.models import Finding, FindingCategory, Severity, make_id
 from ..core.spec import Spec
 
+
+class _FindingItem(BaseModel):
+    category: str
+    severity: str
+    description: str
+    affected_artifact_ids: list[str]
+
+
+class _FindingsResult(BaseModel):
+    findings: list[_FindingItem]
+
+
 _SHARED_CONTEXT = """\
 You are analyzing text artifacts from an agentic AI system.
 Each artifact has an ID, type, agent name, and content.
-Respond ONLY with a JSON array of findings. Each finding must have:
-  - "category": one of tone|vocabulary|constraints|routing|flow
-  - "severity": one of info|warning|error
-  - "description": clear explanation of the issue
-  - "affected_artifact_ids": list of artifact IDs involved
-
-Return [] if you find no issues. No explanation outside the JSON array.\
+Return an empty findings list if you find no issues.\
 """
 
 _TONE_PROMPT = """\
@@ -79,29 +85,21 @@ def _make_model() -> BedrockModel:
 
 def _run_analyzer(prompt: str, category: FindingCategory) -> list[Finding]:
     agent = Agent(system_prompt=_SHARED_CONTEXT, model=_make_model(), callback_handler=None)
-    raw = str(agent(prompt)).strip()
-
-    # Strip markdown fences if the model adds them
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-    try:
-        items = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
+    result = agent(prompt, structured_output_model=_FindingsResult)
+    items = result.structured_output.findings if result.structured_output else []
 
     findings: list[Finding] = []
     for item in items:
         try:
-            severity = Severity(item.get("severity", "warning"))
+            severity = Severity(item.severity)
         except ValueError:
             severity = Severity.WARNING
         findings.append(Finding(
             id=make_id(category.value, str(uuid.uuid4())),
             category=category,
             severity=severity,
-            description=item["description"],
-            affected_artifact_ids=item.get("affected_artifact_ids", []),
+            description=item.description,
+            affected_artifact_ids=item.affected_artifact_ids,
         ))
     return findings
 
