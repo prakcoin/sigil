@@ -29,6 +29,7 @@ def load_spec(project_root: Path) -> Spec:
         VocabularyEntry(
             canonical=entry["canonical"],
             avoid=entry.get("avoid", []),
+            definition=entry.get("definition", ""),
         )
         for entry in data.get("vocabulary", [])
     ]

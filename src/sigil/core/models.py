@@ -64,6 +64,7 @@ class Artifact:
 class VocabularyEntry:
     canonical: str
     avoid: list[str] = field(default_factory=list)
+    definition: str = ""
 
 
 @dataclass

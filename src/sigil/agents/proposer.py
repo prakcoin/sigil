@@ -8,7 +8,8 @@ from strands import Agent
 from strands.models import BedrockModel
 
 from ..core.inventory import Inventory
-from ..core.models import Finding, ProposedChange
+from ..core.models import Finding, FindingCategory, ProposedChange
+from ..core.spec import Spec
 
 
 class _ChangeItem(BaseModel):
@@ -42,7 +43,18 @@ def _make_model() -> BedrockModel:
     )
 
 
-def _propose_for_finding(finding: Finding, inventory: Inventory) -> list[ProposedChange]:
+def _vocab_definitions_text(finding: Finding, spec: Spec) -> str:
+    """Return definition hints for vocabulary findings so the proposer can judge semantic fit."""
+    if finding.category != FindingCategory.VOCABULARY:
+        return ""
+    lines = []
+    for entry in spec.vocabulary:
+        if entry.definition and any(term in finding.description for term in entry.avoid):
+            lines.append(f'  "{entry.canonical}": {entry.definition}')
+    return ("\nVocabulary definitions (only replace an avoid-term when it is used in the sense described):\n" + "\n".join(lines)) if lines else ""
+
+
+def _propose_for_finding(finding: Finding, inventory: Inventory, spec: Spec) -> list[ProposedChange]:
     artifacts_text = "\n\n".join(
         f"[{a.id}] {a.type.value} (agent: {a.agent_name})\n{a.content}"
         for aid in finding.affected_artifact_ids
@@ -53,7 +65,8 @@ def _propose_for_finding(finding: Finding, inventory: Inventory) -> list[Propose
 
     prompt = (
         f"Finding ({finding.severity.value} / {finding.category.value}):\n"
-        f"{finding.description}\n\n"
+        f"{finding.description}"
+        f"{_vocab_definitions_text(finding, spec)}\n\n"
         f"Affected artifacts:\n{artifacts_text}\n\n"
         "Propose specific text changes to fix this finding."
     )
@@ -79,11 +92,11 @@ def _propose_for_finding(finding: Finding, inventory: Inventory) -> list[Propose
     return changes
 
 
-def generate_proposals(findings: list[Finding], inventory: Inventory) -> list[Finding]:
+def generate_proposals(findings: list[Finding], inventory: Inventory, spec: Spec) -> list[Finding]:
     """Attach proposed changes to each finding. Runs proposals in parallel."""
     with ThreadPoolExecutor(max_workers=min(len(findings), 8)) as executor:
         futures = {
-            executor.submit(_propose_for_finding, f, inventory): i
+            executor.submit(_propose_for_finding, f, inventory, spec): i
             for i, f in enumerate(findings)
         }
         for future in as_completed(futures):

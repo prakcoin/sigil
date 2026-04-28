@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +18,7 @@ from rich.text import Text
 from .core.discovery import discover
 from .core.inventory import Inventory
 from .core.models import Finding
-from .core.spec import load_spec, spec_exists, write_spec
+from .core.spec import load_spec, spec_exists, spec_path, write_spec
 
 app = typer.Typer(help="Sigil — text artifact manager for agentic AI projects", add_completion=False)
 console = Console()
@@ -184,6 +186,9 @@ def init(
     if typer.confirm("\nWrite this to sigil.yaml?", default=True):
         write_spec(project, draft)
         console.print("[green]sigil.yaml written.[/green]")
+        if typer.confirm("Open in editor to review before running `sigil review`?", default=True):
+            editor = os.environ.get("EDITOR", "nano")
+            subprocess.call([editor, str(spec_path(project))])
     else:
         console.print("Aborted.")
 
@@ -220,7 +225,7 @@ def review(
         raise typer.Exit()
 
     console.print(f"Generating proposals for [bold]{len(findings)}[/bold] finding(s)...")
-    findings = generate_proposals(findings, inventory)
+    findings = generate_proposals(findings, inventory, spec)
 
     actionable = [f for f in findings if f.proposed_changes]
     filtered = len(findings) - len(actionable)
