@@ -148,4 +148,16 @@ def run_analysis(inventory: Inventory, spec: Spec) -> list[Finding]:
             except Exception:
                 pass
 
-    return findings
+    return _deduplicate(findings)
+
+
+def _deduplicate(findings: list[Finding]) -> list[Finding]:
+    """Drop findings that share the same category and affected artifacts — keep the first."""
+    seen: set[tuple] = set()
+    result: list[Finding] = []
+    for f in findings:
+        key = (f.category, frozenset(f.affected_artifact_ids))
+        if key not in seen:
+            seen.add(key)
+            result.append(f)
+    return result
