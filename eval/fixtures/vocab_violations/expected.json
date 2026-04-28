@@ -1,7 +1,7 @@
 {
   "required_categories": ["vocabulary"],
   "forbidden_categories": [],
-  "min_findings": 1,
-  "max_findings": null,
-  "notes": "Deterministic check: 'utilize', 'leverage', 'in order to' appear in tool docs and system prompt. Must produce vocabulary findings."
+  "min_findings": 3,
+  "max_findings": 3,
+  "notes": "Deterministic check: 3 artifacts have vocabulary violations. One coalesced finding per artifact."
 }
