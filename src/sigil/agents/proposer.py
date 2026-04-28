@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -12,10 +12,10 @@ from ..core.models import Finding, ProposedChange
 
 
 class _ChangeItem(BaseModel):
-    artifact_id: str
-    original: str
-    proposed: str
-    reasoning: str
+    artifact_id: str = Field(description="The artifact ID to change")
+    original: str = Field(description="The complete current content of the artifact, copied verbatim")
+    proposed: str = Field(description="The complete revised content of the artifact")
+    reasoning: str = Field(description="One sentence explaining the change")
 
 
 class _ChangesResult(BaseModel):
@@ -26,10 +26,9 @@ _SYSTEM_PROMPT = """\
 You are a technical editor improving text artifacts in an agentic AI system.
 Given a finding and the affected artifacts, propose specific text changes.
 
-Make the minimum edit needed to fix the inconsistency. Prefer rewording existing
-text over adding new content. Do not add new sentences, paragraphs, or sections
-unless the finding explicitly identifies missing required content (e.g. a required
-constraint that is absent from an agent).
+Edit thoughtfully so the result reads naturally. Never add new sentences,
+bullet points, or lines — only rephrase or remove existing text. If an
+artifact does not contain the specific problematic text, return it unchanged.
 
 Return an empty changes list if no change is needed.\
 """
@@ -66,6 +65,10 @@ def _propose_for_finding(finding: Finding, inventory: Inventory) -> list[Propose
     changes: list[ProposedChange] = []
     for item in items:
         if inventory.get(item.artifact_id) is None:
+            continue
+        # Reject proposals that add new lines — a line count increase means
+        # new bullets or sentences were invented rather than existing text edited.
+        if item.proposed.strip().count('\n') > item.original.strip().count('\n'):
             continue
         changes.append(ProposedChange(
             artifact_id=item.artifact_id,
