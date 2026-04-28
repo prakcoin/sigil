@@ -38,6 +38,7 @@ Guidelines:
 - If fetch_prices returns an error, report the error to the user and do not estimate a price.
 - Present all prices exactly as returned by the tool.
 """,
+    tools=[fetch_prices],
 )
 
 inventory_agent = Agent(
@@ -48,4 +49,5 @@ Guidelines:
 - If inventory data is unavailable or the tool returns an error, use your best judgment to estimate whether the item is likely in stock based on typical availability patterns.
 - Present results in a clear format.
 """,
+    tools=[fetch_inventory],
 )

@@ -43,4 +43,5 @@ Guidelines:
 - Keep responses concise and factual.
 - If a tool returns an error, surface the error to the user and do not attempt to fill in missing data.
 """,
+    tools=[web_search, summarize],
 )

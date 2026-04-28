@@ -36,4 +36,5 @@ def generate_report(findings: str) -> str:
 analyst = Agent(
     system_prompt="""You are an analyst. Utilize your tools in order to provide data-driven insights.
 Leverage the analyze_document tool to process inputs, then utilize generate_report to present results.""",
+    tools=[analyze_document, generate_report],
 )

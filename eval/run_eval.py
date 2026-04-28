@@ -32,6 +32,7 @@ from sigil.core.discovery import discover
 from sigil.core.inventory import Inventory
 from sigil.core.spec import load_spec
 from sigil.agents.analyzers import run_analysis
+from sigil.agents.proposer import generate_proposals
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -84,7 +85,44 @@ def check_fixture(fixture_dir: Path) -> tuple[bool, str]:
     return True, detail
 
 
-def main(target: str | None = None) -> None:
+def report_fixture(fixture_dir: Path) -> None:
+    """Print full findings + proposals for a fixture."""
+    artifacts = discover(fixture_dir)
+    inventory = Inventory(artifacts)
+    spec      = load_spec(fixture_dir)
+    findings  = run_analysis(inventory, spec)
+    if findings:
+        findings = generate_proposals(findings, inventory)
+
+    print(f"\n{BOLD}{'─' * 60}{RESET}")
+    print(f"{BOLD}{fixture_dir.name}{RESET}  {DIM}({len(artifacts)} artifacts, {len(findings)} findings){RESET}")
+    print(f"{BOLD}{'─' * 60}{RESET}")
+
+    if not findings:
+        print(f"  {DIM}No findings.{RESET}\n")
+        return
+
+    sev_color = {"error": RED, "warning": YELLOW, "info": DIM}
+
+    for i, f in enumerate(findings, 1):
+        col = sev_color.get(f.severity.value, RESET)
+        print(f"\n  {BOLD}[{i}] {f.category.value.upper()}{RESET}  {col}{f.severity.value}{RESET}")
+        print(f"  {f.description}")
+
+        for change in f.proposed_changes:
+            artifact = inventory.get(change.artifact_id)
+            label = f"{artifact.agent_name} / {artifact.type.value}" if artifact else change.artifact_id
+            print(f"\n    {DIM}artifact:{RESET} {label}")
+            orig_preview  = change.original[:120].replace("\n", "↵ ")
+            prop_preview  = change.proposed[:120].replace("\n", "↵ ")
+            print(f"    {DIM}before:{RESET}   {orig_preview}{'…' if len(change.original) > 120 else ''}")
+            print(f"    {DIM}after:{RESET}    {GREEN}{prop_preview}{'…' if len(change.proposed) > 120 else ''}{RESET}")
+            print(f"    {DIM}reason:{RESET}   {change.reasoning}")
+
+    print()
+
+
+def main(target: str | None = None, report: bool = False) -> None:
     fixtures = sorted(
         d for d in FIXTURES_DIR.iterdir() if d.is_dir()
     ) if FIXTURES_DIR.exists() else []
@@ -98,6 +136,11 @@ def main(target: str | None = None) -> None:
     if not fixtures:
         print(f"{YELLOW}No fixtures found in {FIXTURES_DIR}{RESET}")
         sys.exit(1)
+
+    if report:
+        for fixture_dir in fixtures:
+            report_fixture(fixture_dir)
+        return
 
     print(f"\n{BOLD}Sigil eval — {len(fixtures)} fixture(s){RESET}\n")
     results: list[tuple[str, bool, str]] = []
@@ -128,4 +171,7 @@ def main(target: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else None)
+    args = sys.argv[1:]
+    _report = "--report" in args
+    args = [a for a in args if a != "--report"]
+    main(args[0] if args else None, report=_report)

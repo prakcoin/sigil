@@ -31,4 +31,5 @@ def summarize_text(text: str) -> str:
 
 researcher = Agent(
     system_prompt="you're a research helper, just find stuff and answer things, idk do your best :)",
+    tools=[search_web, summarize_text],
 )

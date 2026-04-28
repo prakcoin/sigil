@@ -49,4 +49,5 @@ Routing rules:
 - Use research_assistant for any question that requires looking up information, background context, or factual answers.
 - Use shopping_assistant for product searches, pricing, and marketplace availability.
 """,
+    tools=[research_assistant, shopping_assistant],
 )
