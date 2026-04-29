@@ -77,9 +77,18 @@ def _collect_skills_map(project_root: Path) -> dict[str, str]:
     return result
 
 
-def _collect_plugin_context(tree: ast.Module, var_names: set[str]) -> dict[str, str]:
-    """For each var in var_names, find the agent context of Agent(plugins=[..., var, ...])."""
+def _collect_plugin_context(
+    tree: ast.Module,
+    var_names: set[str],
+    assignment_map: dict[int, str] | None = None,
+) -> dict[str, str]:
+    """For each var in var_names, find the agent that consumes it via plugins=[..., var, ...].
+
+    Uses the Agent() variable assignment name when available (e.g. inside a workflow
+    tool), falling back to the surrounding @tool or class context.
+    """
     result: dict[str, str] = {}
+    _amap = assignment_map or {}
 
     class _V(ast.NodeVisitor):
         def __init__(self):
@@ -108,13 +117,15 @@ def _collect_plugin_context(tree: ast.Module, var_names: set[str]) -> dict[str, 
         visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_Call(self, node: ast.Call):
-            ctx = self._agent_ctx
-            if ctx and _call_name(node) == "Agent":
-                for kw in node.keywords:
-                    if kw.arg == "plugins" and isinstance(kw.value, ast.List):
-                        for elt in kw.value.elts:
-                            if isinstance(elt, ast.Name) and elt.id in var_names:
-                                result[elt.id] = ctx
+            if _call_name(node) == "Agent":
+                # Variable assignment wins over surrounding tool/class context
+                agent_name = _amap.get(node.lineno) or self._agent_ctx
+                if agent_name:
+                    for kw in node.keywords:
+                        if kw.arg == "plugins" and isinstance(kw.value, ast.List):
+                            for elt in kw.value.elts:
+                                if isinstance(elt, ast.Name) and elt.id in var_names:
+                                    result[elt.id] = agent_name
             self.generic_visit(node)
 
     _V().visit(tree)
@@ -301,10 +312,23 @@ def _discover_in_file(file_path: Path, project_root: Path) -> list[Artifact]:
 
     # Re-attribute module-level handler prompts to the agent that consumes them
     # via Agent(plugins=[..., handler_var, ...]).
-    plugin_map = _collect_plugin_agent_map(tree, string_vars)
+    plugin_map = _collect_plugin_agent_map(tree, string_vars, assignment_map)
     for artifact in visitor.artifacts:
         if artifact.type == ArtifactType.HANDLER_PROMPT and artifact.line_start in plugin_map:
             artifact.agent_name = plugin_map[artifact.line_start]
+
+    # If the file stem appears as an agent name alongside real agent names, it's a
+    # phantom fallback. Re-attribute those artifacts to the most common real agent name.
+    file_stem = file_path.stem
+    real_names = [
+        a.agent_name for a in visitor.artifacts
+        if a.agent_name != file_stem and a.type == ArtifactType.SYSTEM_PROMPT
+    ]
+    if real_names:
+        dominant = max(set(real_names), key=real_names.count)
+        for artifact in visitor.artifacts:
+            if artifact.agent_name == file_stem:
+                artifact.agent_name = dominant
 
     return visitor.artifacts
 
@@ -312,6 +336,7 @@ def _discover_in_file(file_path: Path, project_root: Path) -> list[Artifact]:
 def _collect_plugin_agent_map(
     tree: ast.Module,
     string_vars: dict[str, _StringVar],
+    assignment_map: dict[int, str] | None = None,
 ) -> dict[int, str]:
     """Map system_prompt string lineno → agent name for module-level handler assignments.
 
@@ -347,7 +372,7 @@ def _collect_plugin_agent_map(
         return {}
 
     # Step 2: re-use _collect_plugin_context, then remap var_name → lineno → agent
-    var_to_agent = _collect_plugin_context(tree, set(module_handlers.keys()))
+    var_to_agent = _collect_plugin_context(tree, set(module_handlers.keys()), assignment_map)
     return {lineno: var_to_agent[var] for var, lineno in module_handlers.items() if var in var_to_agent}
 
 
@@ -499,16 +524,20 @@ class _ArtifactVisitor(ast.NodeVisitor):
         return None
 
     def _resolve_agent_name(self, call_node: ast.Call) -> str:
-        """Resolve the owning agent name for a call node."""
-        for kind, name in reversed(self._ctx):
-            if kind == "tool":
-                return name
+        """Resolve the owning agent name for a call node.
+
+        Variable assignment wins over tool context so that sub-agents created
+        inside a workflow tool (e.g. planner = Agent(...)) get their own name
+        rather than collapsing under the parent tool name.
+        """
+        if call_node.lineno in self.assignment_map:
+            return self.assignment_map[call_node.lineno]
         for k in call_node.keywords:
             if k.arg == "name":
                 name = _extract_string(k.value)
                 if name:
                     return name
-        return self.assignment_map.get(call_node.lineno) or self._agent_name
+        return self._agent_name
 
     def visit_Call(self, node: ast.Call):
         name = _call_name(node)

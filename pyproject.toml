@@ -11,6 +11,8 @@ dependencies = [
     "typer[all]",
     "rich",
     "pyyaml",
+    "textual",
+    "watchfiles",
 ]
 
 [project.optional-dependencies]

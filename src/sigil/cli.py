@@ -321,6 +321,42 @@ def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
 # sigil apply
 # ---------------------------------------------------------------------------
 
+def _apply_findings(findings: list[Finding], inventory: Inventory, project: Path) -> int:
+    """Write proposed changes from approved findings to source files. Returns applied count."""
+    applied = 0
+    for finding in findings:
+        for change in finding.proposed_changes:
+            artifact = inventory.get(change.artifact_id)
+            if artifact is None:
+                continue
+
+            file_path = project / artifact.file_path
+            try:
+                source = file_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+
+            if artifact.source_segment not in source:
+                continue
+
+            if artifact.file_path.endswith(".md"):
+                new_source = source.replace(artifact.source_segment, change.proposed, 1)
+            else:
+                seg = artifact.source_segment
+                if seg.startswith('"""') or seg.startswith("'''"):
+                    quote = seg[:3]
+                elif seg.startswith('"') or seg.startswith("'"):
+                    quote = seg[0]
+                else:
+                    quote = '"'
+                new_source = source.replace(seg, quote + change.proposed + quote, 1)
+
+            file_path.write_text(new_source, encoding="utf-8")
+            applied += 1
+
+    return applied
+
+
 @app.command()
 def apply(
     project: Path = typer.Argument(default=Path("."), help="Path to project root"),
@@ -337,54 +373,22 @@ def apply(
     artifacts = discover(project)
     inventory = Inventory(artifacts)
 
-    applied = 0
-    errors = 0
-
-    for finding in findings:
-        for change in finding.proposed_changes:
-            artifact = inventory.get(change.artifact_id)
-            if artifact is None:
-                console.print(f"[yellow]Artifact {change.artifact_id} not found — skipped.[/yellow]")
-                errors += 1
-                continue
-
-            file_path = project / artifact.file_path
-            try:
-                source = file_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                console.print(f"[red]File not found: {artifact.file_path}[/red]")
-                errors += 1
-                continue
-
-            if artifact.source_segment not in source:
-                console.print(
-                    f"[yellow]Source segment no longer found in {artifact.file_path} "
-                    f"(artifact {artifact.id}) — skipped. File may have changed since scan.[/yellow]"
-                )
-                errors += 1
-                continue
-
-            if artifact.file_path.endswith(".md"):
-                # SKILL.md: source_segment is plain body text — replace directly
-                new_source = source.replace(artifact.source_segment, change.proposed, 1)
-            else:
-                # Python file: source_segment is a quoted string literal — preserve quote style
-                seg = artifact.source_segment
-                if seg.startswith('"""') or seg.startswith("'''"):
-                    quote = seg[:3]
-                elif seg.startswith('"') or seg.startswith("'"):
-                    quote = seg[0]
-                else:
-                    quote = '"'
-                new_source = source.replace(seg, quote + change.proposed + quote, 1)
-
-            file_path.write_text(new_source, encoding="utf-8")
-
-            console.print(f"[green]Updated[/green] {artifact.file_path}  [dim]{artifact.id}[/dim]")
-            applied += 1
-
+    applied = _apply_findings(findings, inventory, project)
     pending_path.unlink()
-    console.print(f"\n{applied} change(s) applied, {errors} skipped.")
+    console.print(f"\n{applied} change(s) applied.")
+
+
+@app.command()
+def watch(
+    project: Path = typer.Argument(default=Path("."), help="Path to project root"),
+):
+    """Live artifact manager — watches for changes and surfaces findings interactively."""
+    from .tui import SigilTUI
+    try:
+        SigilTUI(project_root=project.resolve()).run()
+    except KeyboardInterrupt:
+        pass
+    console.print("[dim]exited.[/dim]")
 
 
 def main():
