@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel
 from strands import Agent
-from strands.models import BedrockModel
 
 from ..core.checks import check_vocabulary
+from ..core.model import make_model
 from ..core.inventory import Inventory
 from ..core.models import Finding, FindingCategory, Severity, make_id
 from ..core.spec import Spec
@@ -79,16 +78,8 @@ sentences within the same artifact.\
 """
 
 
-def _make_model() -> BedrockModel:
-    return BedrockModel(
-        model_id=os.environ.get("SIGIL_MODEL_ID", "us.amazon.nova-2-lite-v1:0"),
-        temperature=0.0,
-        max_tokens=12000,
-    )
-
-
 def _run_analyzer(prompt: str, category: FindingCategory) -> list[Finding]:
-    agent = Agent(system_prompt=_SHARED_CONTEXT, model=_make_model(), callback_handler=None)
+    agent = Agent(system_prompt=_SHARED_CONTEXT, model=make_model(), callback_handler=None)
     result = agent(prompt, structured_output_model=_FindingsResult)
     items = result.structured_output.findings if result.structured_output else []
 

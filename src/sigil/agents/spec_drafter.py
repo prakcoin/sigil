@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
-
 import yaml
 from strands import Agent
-from strands.models import BedrockModel
 
 from ..core.inventory import Inventory
+from ..core.model import make_model
 
 _SYSTEM_PROMPT = """\
 You are a technical writer auditing text artifacts from an agentic AI system.
@@ -76,12 +74,7 @@ def _clean_vocabulary(yaml_str: str) -> str:
 
 def draft_spec(inventory: Inventory) -> str:
     """Run the spec drafter agent and return raw YAML string for human review."""
-    model = BedrockModel(
-        model_id=os.environ.get("SIGIL_MODEL_ID", "us.amazon.nova-2-lite-v1:0"),
-        temperature=0.0,
-        max_tokens=12000,
-    )
-    agent = Agent(system_prompt=_SYSTEM_PROMPT, model=model, callback_handler=None)
+    agent = Agent(system_prompt=_SYSTEM_PROMPT, model=make_model(), callback_handler=None)
 
     prompt = (
         "Here are all text artifacts from the project. "

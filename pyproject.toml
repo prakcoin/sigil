@@ -13,6 +13,9 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+anthropic = ["anthropic"]
+
 [project.scripts]
 sigil = "sigil.cli:main"
 

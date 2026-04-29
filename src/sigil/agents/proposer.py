@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel, Field
 from strands import Agent
-from strands.models import BedrockModel
 
 from ..core.inventory import Inventory
+from ..core.model import make_model
 from ..core.models import Finding, FindingCategory, ProposedChange
 from ..core.spec import Spec
 
@@ -33,14 +32,6 @@ artifact does not contain the specific problematic text, return it unchanged.
 
 Return an empty changes list if no change is needed.\
 """
-
-
-def _make_model() -> BedrockModel:
-    return BedrockModel(
-        model_id=os.environ.get("SIGIL_MODEL_ID", "us.amazon.nova-2-lite-v1:0"),
-        temperature=0.0,
-        max_tokens=12000,
-    )
 
 
 def _vocab_definitions_text(finding: Finding, spec: Spec) -> str:
@@ -71,7 +62,7 @@ def _propose_for_finding(finding: Finding, inventory: Inventory, spec: Spec) -> 
         "Propose specific text changes to fix this finding."
     )
 
-    agent = Agent(system_prompt=_SYSTEM_PROMPT, model=_make_model(), callback_handler=None)
+    agent = Agent(system_prompt=_SYSTEM_PROMPT, model=make_model(), callback_handler=None)
     result = agent(prompt, structured_output_model=_ChangesResult)
     items = result.structured_output.changes if result.structured_output else []
 
