@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
 from typing import Optional
-
-import difflib
 
 import typer
 import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from .core.discovery import discover
 from .core.inventory import Inventory
@@ -22,8 +18,6 @@ from .core.spec import load_spec, spec_exists, spec_path, write_spec
 
 app = typer.Typer(help="Sigil — text artifact manager for agentic AI projects", add_completion=False)
 console = Console()
-
-_PENDING_FILE = ".sigil/pending.json"
 
 
 # ---------------------------------------------------------------------------
@@ -186,140 +180,12 @@ def init(
     if typer.confirm("\nWrite this to sigil.yaml?", default=True):
         write_spec(project, draft)
         console.print("[green]sigil.yaml written.[/green]")
-        if typer.confirm("Open in editor to review before running `sigil review`?", default=True):
+        if typer.confirm("Open in editor to review before running `sigil watch`?", default=True):
             editor = os.environ.get("EDITOR", "nano")
             subprocess.call([editor, str(spec_path(project))])
     else:
         console.print("Aborted.")
 
-
-# ---------------------------------------------------------------------------
-# sigil review
-# ---------------------------------------------------------------------------
-
-@app.command()
-def review(
-    project: Path = typer.Argument(default=Path("."), help="Path to project root"),
-    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category: tone|vocabulary|constraints|routing|flow"),
-):
-    """Run analysis agents and interactively approve or reject findings."""
-    from .agents.analyzers import run_analysis
-    from .agents.proposer import generate_proposals
-
-    artifacts = discover(project)
-    if not artifacts:
-        console.print("[yellow]No artifacts found.[/yellow]")
-        raise typer.Exit()
-
-    inventory = Inventory(artifacts)
-    spec = load_spec(project)
-
-    if not spec_exists(project):
-        console.print("[yellow]No sigil.yaml found. Run [bold]sigil init[/bold] first for better results.[/yellow]\n")
-
-    console.print(f"Analyzing [bold]{len(artifacts)}[/bold] artifact(s) across 4 dimensions...")
-    findings = run_analysis(inventory, spec)
-
-    if not findings:
-        console.print("[green]No issues found.[/green]")
-        raise typer.Exit()
-
-    console.print(f"Generating proposals for [bold]{len(findings)}[/bold] finding(s)...")
-    findings = generate_proposals(findings, inventory, spec)
-
-    actionable = [f for f in findings if f.proposed_changes]
-    filtered = len(findings) - len(actionable)
-    if filtered:
-        console.print(f"[dim]{filtered} finding(s) had no meaningful change proposed — skipped.[/dim]")
-    findings = actionable
-
-    if category:
-        findings = [f for f in findings if f.category.value == category]
-        if not findings:
-            console.print(f"[yellow]No findings in category '{category}'.[/yellow]")
-            raise typer.Exit()
-
-    if not findings:
-        console.print("[green]No actionable findings.[/green]")
-        raise typer.Exit()
-
-    _interactive_review(findings, inventory)
-
-    pending_path = project / _PENDING_FILE
-    approved = [f for f in findings if f.approved is True]
-    if approved:
-        pending_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(pending_path, "w") as fp:
-            json.dump([f.to_dict() for f in approved], fp, indent=2)
-        console.print(
-            f"\n[green]{len(approved)}[/green] finding(s) approved. "
-            f"Run [bold]sigil apply[/bold] to write changes."
-        )
-    else:
-        console.print("\nNo findings approved.")
-
-
-def _diff_panel(original: str, proposed: str) -> Panel:
-    orig_lines = original.splitlines(keepends=True)
-    prop_lines = proposed.splitlines(keepends=True)
-    hunks = list(difflib.unified_diff(orig_lines, prop_lines, lineterm=""))
-
-    text = Text()
-    for line in hunks[2:]:  # skip --- / +++ file headers
-        if line.startswith("+"):
-            text.append(line + "\n", style="green")
-        elif line.startswith("-"):
-            text.append(line + "\n", style="red")
-        elif line.startswith("@@"):
-            text.append(line + "\n", style="cyan dim")
-        else:
-            text.append(line + "\n", style="dim")
-
-    return Panel(text, title="diff", border_style="dim")
-
-
-def _interactive_review(findings: list[Finding], inventory: Inventory) -> None:
-    console.print()
-    for i, finding in enumerate(findings):
-        if finding.approved is not None:
-            continue
-        header = (
-            f"[bold]Finding {i + 1}/{len(findings)}[/bold]  "
-            f"[cyan]{finding.category.value}[/cyan]  "
-            f"[{'red' if finding.severity.value == 'error' else 'yellow'}]{finding.severity.value}[/]"
-        )
-        console.print(Panel(finding.description, title=header, border_style="dim"))
-
-        for change in finding.proposed_changes:
-            artifact = inventory.get(change.artifact_id)
-            label = f"{artifact.agent_name} / {artifact.type.value}" if artifact else change.artifact_id
-            console.print(f"  [dim]Artifact:[/dim] {label}")
-            console.print(_diff_panel(change.original, change.proposed))
-            console.print(f"  [dim]Reason:[/dim] {change.reasoning}\n")
-
-        choice = typer.prompt(
-            "  [y] approve  [n] reject  [s] skip category",
-            default="n",
-            show_default=False,
-        ).strip().lower()
-
-        if choice == "y":
-            finding.approved = True
-            console.print("  [green]Approved.[/green]\n")
-        elif choice == "s":
-            cat = finding.category
-            for remaining in findings[i:]:
-                if remaining.category == cat and remaining.approved is None:
-                    remaining.approved = False
-            console.print(f"  [yellow]Skipped all {cat.value} findings.[/yellow]\n")
-        else:
-            finding.approved = False
-            console.print("  [dim]Rejected.[/dim]\n")
-
-
-# ---------------------------------------------------------------------------
-# sigil apply
-# ---------------------------------------------------------------------------
 
 def _apply_findings(findings: list[Finding], inventory: Inventory, project: Path) -> int:
     """Write proposed changes from approved findings to source files. Returns applied count."""
@@ -356,26 +222,6 @@ def _apply_findings(findings: list[Finding], inventory: Inventory, project: Path
 
     return applied
 
-
-@app.command()
-def apply(
-    project: Path = typer.Argument(default=Path("."), help="Path to project root"),
-):
-    """Write all approved changes to source files."""
-    pending_path = project / _PENDING_FILE
-    if not pending_path.exists():
-        console.print("[yellow]Nothing pending. Run [bold]sigil review[/bold] first.[/yellow]")
-        raise typer.Exit()
-
-    with open(pending_path) as f:
-        findings = [Finding.from_dict(d) for d in json.load(f)]
-
-    artifacts = discover(project)
-    inventory = Inventory(artifacts)
-
-    applied = _apply_findings(findings, inventory, project)
-    pending_path.unlink()
-    console.print(f"\n{applied} change(s) applied.")
 
 
 @app.command()
