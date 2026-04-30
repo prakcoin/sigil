@@ -1,0 +1,7 @@
+{
+  "required_categories": [],
+  "forbidden_categories": ["vocabulary"],
+  "min_findings": 0,
+  "max_findings": null,
+  "notes": "Morphological variants (utilizing, leveraging, leveraged) do not match word-boundary regex for their root forms (utilize, leverage). Known limitation: vocabulary check is not morphology-aware."
+}

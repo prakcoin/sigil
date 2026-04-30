@@ -1,0 +1,7 @@
+{
+  "required_categories": [],
+  "forbidden_categories": ["constraints"],
+  "min_findings": 0,
+  "max_findings": null,
+  "notes": "Single agent missing one required constraint. Constraint detection is cross-agent only — single-agent violations are a known limitation and must NOT fire."
+}

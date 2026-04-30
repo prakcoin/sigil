@@ -1,0 +1,9 @@
+tone: >
+  Professional and concise. Use imperative voice for guidelines.
+
+vocabulary:
+  - canonical: "use"
+    avoid: ["utilize", "leverage"]
+
+required_constraints:
+  - "Do not infer or fabricate data not returned by tools."

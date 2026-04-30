@@ -92,7 +92,7 @@ def report_fixture(fixture_dir: Path) -> None:
     spec      = load_spec(fixture_dir)
     findings  = run_analysis(inventory, spec)
     if findings:
-        findings = generate_proposals(findings, inventory)
+        findings = generate_proposals(findings, inventory, spec)
 
     print(f"\n{BOLD}{'─' * 60}{RESET}")
     print(f"{BOLD}{fixture_dir.name}{RESET}  {DIM}({len(artifacts)} artifacts, {len(findings)} findings){RESET}")

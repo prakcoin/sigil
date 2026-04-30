@@ -1,0 +1,7 @@
+{
+  "required_categories": [],
+  "forbidden_categories": ["tone", "vocabulary", "constraints", "routing", "flow"],
+  "min_findings": 0,
+  "max_findings": 0,
+  "notes": "No discoverable artifacts — pipeline must handle an empty inventory without crashing and produce zero findings."
+}
