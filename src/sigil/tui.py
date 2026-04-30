@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import difflib
+import textwrap
 import threading
 from pathlib import Path
+
+from rich.markup import escape
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import Footer, Header, Label, RichLog, Static, Tree
+from textual.widgets import Footer, Header, Label, RichLog, Tree
 from textual.widgets.tree import TreeNode
 
 from .core.discovery import discover
@@ -24,7 +28,66 @@ _TYPE_LABEL = {
 }
 
 
-class ArtifactViewer(Static):
+def _word_diff_line(original: str, proposed: str) -> tuple[str, str]:
+    """Inline word-level diff for a single line. Returns (before_markup, after_markup)."""
+    orig_words = original.split()
+    prop_words = proposed.split()
+    matcher = difflib.SequenceMatcher(None, orig_words, prop_words, autojunk=False)
+    before_parts: list[str] = []
+    after_parts: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        o = escape(" ".join(orig_words[i1:i2]))
+        p = escape(" ".join(prop_words[j1:j2]))
+        if tag == "equal":
+            before_parts.append(o)
+            after_parts.append(p)
+        elif tag == "replace":
+            before_parts.append(f"[bold red]{o}[/bold red]")
+            after_parts.append(f"[bold green]{p}[/bold green]")
+        elif tag == "delete":
+            before_parts.append(f"[bold red]{o}[/bold red]")
+        elif tag == "insert":
+            after_parts.append(f"[bold green]{p}[/bold green]")
+    return " ".join(before_parts), " ".join(after_parts)
+
+
+def _diff_markup(original: str, proposed: str) -> tuple[str, str]:
+    """Line-level diff with inline word-level highlighting for changed lines.
+    Returns (before_markup, after_markup) ready for RichLog.write()."""
+    orig_lines = original.splitlines()
+    prop_lines = proposed.splitlines()
+    matcher = difflib.SequenceMatcher(None, orig_lines, prop_lines, autojunk=False)
+    before_lines: list[str] = []
+    after_lines: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for line in orig_lines[i1:i2]:
+                before_lines.append(escape(line))
+            for line in prop_lines[j1:j2]:
+                after_lines.append(escape(line))
+        elif tag == "replace":
+            orig_chunk = orig_lines[i1:i2]
+            prop_chunk = prop_lines[j1:j2]
+            if len(orig_chunk) == len(prop_chunk):
+                for old, new in zip(orig_chunk, prop_chunk):
+                    b, a = _word_diff_line(old, new)
+                    before_lines.append(b)
+                    after_lines.append(a)
+            else:
+                for line in orig_chunk:
+                    before_lines.append(f"[red]{escape(line)}[/red]")
+                for line in prop_chunk:
+                    after_lines.append(f"[green]{escape(line)}[/green]")
+        elif tag == "delete":
+            for line in orig_lines[i1:i2]:
+                before_lines.append(f"[red]{escape(line)}[/red]")
+        elif tag == "insert":
+            for line in prop_lines[j1:j2]:
+                after_lines.append(f"[green]{escape(line)}[/green]")
+    return "\n".join(before_lines), "\n".join(after_lines)
+
+
+class ArtifactViewer(RichLog):
     """Displays the content of the selected artifact."""
 
     DEFAULT_CSS = """
@@ -32,12 +95,13 @@ class ArtifactViewer(Static):
         height: 1fr;
         border: solid $accent;
         padding: 1 2;
-        overflow-y: scroll;
     }
     """
 
     def show(self, title: str, content: str) -> None:
-        self.update(f"[bold cyan]{title}[/bold cyan]\n\n{content}")
+        self.clear()
+        self.write(f"[bold cyan]{title}[/bold cyan]\n\n{textwrap.dedent(content).strip()}")
+        self.scroll_home(animate=False)
 
 
 class FindingsPanel(RichLog):
@@ -90,7 +154,9 @@ class SigilTUI(App):
         Binding("f", "toggle_panel", "Toggle findings view"),
         Binding("y", "approve", "Approve"),
         Binding("n", "reject", "Reject"),
-        Binding("s", "skip_category", "Skip category"),
+        Binding("u", "undo_decision", "Undo decision"),
+        Binding("a", "apply", "Apply approved"),
+        Binding("escape", "deselect", "Deselect", show=False),
     ]
 
     _findings: reactive[list[Finding]] = reactive([], always_update=True)
@@ -105,6 +171,12 @@ class SigilTUI(App):
         self._spec: Spec | None = None
         self._lock = threading.Lock()
         self._watcher_stop: threading.Event | None = None
+        self._decisions: dict[tuple, bool] = {}  # (category, frozenset(artifact_ids)) → approved
+        self._scanning: bool = False
+
+    @staticmethod
+    def _finding_key(f: Finding) -> tuple:
+        return (f.category, frozenset(f.affected_artifact_ids))
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -113,8 +185,8 @@ class SigilTUI(App):
             with Vertical(id="left"):
                 yield Tree("Project", id="agent-tree")
             with Vertical(id="right"):
-                yield ArtifactViewer("Select an artifact", id="viewer")
-                yield FindingsPanel(id="findings", highlight=True, markup=True)
+                yield ArtifactViewer(id="viewer", highlight=False, markup=True, auto_scroll=False)
+                yield FindingsPanel(id="findings", highlight=False, markup=True, auto_scroll=False)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -126,6 +198,8 @@ class SigilTUI(App):
     # ------------------------------------------------------------------
 
     def _do_scan(self, changed: set[Path] | None = None) -> None:
+        with self._lock:
+            self._scanning = True
         self._set_status("scanning...")
         threading.Thread(target=self._scan_worker, args=(changed,), daemon=True).start()
 
@@ -143,6 +217,8 @@ class SigilTUI(App):
             self._set_status(f"analyzing {len(artifacts)} artifact(s)...")
             self._run_analysis(inventory, spec)
         except Exception as e:
+            with self._lock:
+                self._scanning = False
             self._set_status(f"[red]scan error: {e}[/red]")
 
     def _run_analysis(self, inventory: Inventory, spec: Spec) -> None:
@@ -155,8 +231,13 @@ class SigilTUI(App):
             findings = [f for f in findings if f.proposed_changes]
 
             with self._lock:
+                for f in findings:
+                    key = self._finding_key(f)
+                    if key in self._decisions:
+                        f.approved = self._decisions[key]
                 self._findings = findings
                 self._current_finding_index = 0
+                self._scanning = False
 
             self.call_from_thread(self._refresh_findings)
             self.call_from_thread(self._update_status)
@@ -165,6 +246,8 @@ class SigilTUI(App):
             if inv:
                 self.call_from_thread(self._rebuild_tree, inv)
         except Exception as e:
+            with self._lock:
+                self._scanning = False
             self._set_status(f"[red]analysis error: {e}[/red]")
 
     # ------------------------------------------------------------------
@@ -273,6 +356,14 @@ class SigilTUI(App):
     def action_toggle_panel(self) -> None:
         self._panel_mode = "global" if self._panel_mode == "contextual" else "contextual"
         self._refresh_findings()
+        self._update_status()
+
+    def action_deselect(self) -> None:
+        if self._panel_mode == "contextual":
+            self._selected_artifact_id = None
+            viewer: ArtifactViewer = self.query_one("#viewer", ArtifactViewer)
+            viewer.clear()
+            self._refresh_findings()
 
     def _refresh_findings(self) -> None:
         if self._panel_mode == "contextual":
@@ -289,14 +380,13 @@ class SigilTUI(App):
             artifact_id = self._selected_artifact_id
 
         panel.write(
-            "[dim]contextual  [bold]f[/bold]=global queue[/dim]\n"
+            "[dim]contextual  [/dim][bold]f[/bold][dim]=global queue[/dim]\n"
         )
 
         if not artifact_id:
             panel.write("[dim]Select an artifact to see its findings.[/dim]")
             return
 
-        # Find findings that affect this artifact
         relevant = [
             f for f in findings
             if any(c.artifact_id == artifact_id for c in f.proposed_changes)
@@ -308,6 +398,7 @@ class SigilTUI(App):
 
         for f in relevant:
             sev_color = "red" if f.severity.value == "error" else "yellow"
+            sev_label = f"[{sev_color} dim]{f.severity.value}[/{sev_color} dim]"
             status = ""
             if f.approved is True:
                 status = "  [green]✓ approved[/green]"
@@ -315,22 +406,27 @@ class SigilTUI(App):
                 status = "  [dim]✗ rejected[/dim]"
 
             panel.write(
-                f"[{sev_color}]{f.category.value.upper()}[/{sev_color}]  "
-                f"[dim]{f.severity.value}[/dim]{status}"
+                f"[{sev_color} bold]{f.category.value.upper()}[/{sev_color} bold]  "
+                f"{sev_label}{status}"
             )
-            panel.write(f"{f.description}\n")
-
-            for change in f.proposed_changes:
-                if change.artifact_id != artifact_id:
-                    continue
-                panel.write("[dim]Before:[/dim]")
-                panel.write(f"[red]{change.original}[/red]\n")
-                panel.write("[dim]After:[/dim]")
-                panel.write(f"[green]{change.proposed}[/green]\n")
-                panel.write(f"[dim]{change.reasoning}[/dim]\n")
+            panel.write(f"[white]{f.description}[/white]\n")
 
             if f.approved is None:
-                panel.write("[dim]  y=approve  n=reject  s=skip category[/dim]\n")
+                for change in f.proposed_changes:
+                    if change.artifact_id != artifact_id:
+                        continue
+                    before_markup, after_markup = _diff_markup(
+                        textwrap.dedent(change.original).strip(),
+                        textwrap.dedent(change.proposed).strip(),
+                    )
+                    panel.write("[dim red]Before:[/dim red]")
+                    panel.write(f"{before_markup}\n")
+                    panel.write("[dim green]After:[/dim green]")
+                    panel.write(f"{after_markup}\n")
+                    panel.write(f"[dim italic]{change.reasoning}[/dim italic]\n")
+                panel.write("[dim]  [bold]y[/bold]=approve  [bold]n[/bold]=reject[/dim]\n")
+
+        panel.scroll_home(animate=False)
 
     def _render_global(self) -> None:
         panel: FindingsPanel = self.query_one("#findings", FindingsPanel)
@@ -341,22 +437,24 @@ class SigilTUI(App):
             idx = self._current_finding_index
 
         panel.write(
-            "[dim]global queue  [bold]f[/bold]=contextual[/dim]\n"
+            "[dim]global queue  [/dim][bold]f[/bold][dim]=contextual[/dim]\n"
         )
 
         if not findings:
             panel.write("[green]✓  No findings.[/green]")
+            panel.scroll_home(animate=False)
             return
 
         pending = sum(1 for f in findings if f.approved is None)
         panel.write(
             f"[bold]{len(findings)} finding(s)[/bold]  "
-            f"[dim]{pending} pending  y=approve  n=reject  s=skip category[/dim]\n"
+            f"[dim]{pending} pending  [bold]y[/bold]=approve  [bold]n[/bold]=reject  [bold]a[/bold]=apply[/dim]\n"
         )
 
         for i, f in enumerate(findings):
-            marker = "▶" if i == idx else " "
+            marker = "[bold yellow]▶[/bold yellow]" if i == idx else " "
             sev_color = "red" if f.severity.value == "error" else "yellow"
+            sev_label = f"[{sev_color} dim]{f.severity.value}[/{sev_color} dim]"
             status = ""
             if f.approved is True:
                 status = "  [green]✓[/green]"
@@ -364,8 +462,8 @@ class SigilTUI(App):
                 status = "  [dim]✗[/dim]"
 
             panel.write(
-                f"{marker} [{sev_color}]{f.category.value.upper()}[/{sev_color}]  "
-                f"[dim]{f.severity.value}[/dim]{status}  {f.description}"
+                f"{marker} [{sev_color} bold]{f.category.value.upper()}[/{sev_color} bold]  "
+                f"{sev_label}{status}  [white]{f.description}[/white]"
             )
 
             if f.proposed_changes:
@@ -373,65 +471,78 @@ class SigilTUI(App):
                 artifact = inv.get(f.proposed_changes[0].artifact_id) if inv else None
                 if artifact:
                     label = f"{artifact.agent_name} / {_TYPE_LABEL.get(artifact.type, artifact.type.value)}"
-                    panel.write(f"  [dim]→ {label}[/dim]")
+                    panel.write(f"  [cyan dim]→ {label}[/cyan dim]")
 
             panel.write("")
+
+        panel.scroll_home(animate=False)
 
     # ------------------------------------------------------------------
     # Approval actions
     # ------------------------------------------------------------------
 
     def action_approve(self) -> None:
+        with self._lock:
+            if self._scanning:
+                return
         self._apply_decision(True)
 
     def action_reject(self) -> None:
+        with self._lock:
+            if self._scanning:
+                return
         self._apply_decision(False)
 
-    def _apply_decision(self, approved: bool) -> None:
+    def action_undo_decision(self) -> None:
+        with self._lock:
+            if self._scanning:
+                return
+        self._apply_decision(None)
+
+    def action_apply(self) -> None:
+        with self._lock:
+            if self._scanning:
+                return
+        self._write_approved()
+
+    def _apply_decision(self, approved: bool | None) -> None:
         with self._lock:
             findings = self._findings
             artifact_id = self._selected_artifact_id
 
+        decided: Finding | None = None
+
         if self._panel_mode == "contextual" and artifact_id:
-            # Approve/reject the finding for the selected artifact
             for f in findings:
-                if f.approved is None and any(
-                    c.artifact_id == artifact_id for c in f.proposed_changes
-                ):
+                if any(c.artifact_id == artifact_id for c in f.proposed_changes):
                     f.approved = approved
+                    decided = f
                     break
         else:
-            # Global mode — act on current indexed finding
             with self._lock:
                 idx = self._current_finding_index
                 if not findings or idx >= len(findings):
                     return
                 findings[idx].approved = approved
-                for offset in range(1, len(findings)):
-                    next_idx = (idx + offset) % len(findings)
-                    if findings[next_idx].approved is None:
-                        self._current_finding_index = next_idx
-                        break
+                decided = findings[idx]
+                if approved is None:
+                    pass  # stay on current finding when undoing
+                else:
+                    for offset in range(1, len(findings)):
+                        next_idx = (idx + offset) % len(findings)
+                        if findings[next_idx].approved is None:
+                            self._current_finding_index = next_idx
+                            break
 
-        self._refresh_findings()
-        self._update_status()
-        if approved:
-            self._write_approved()
+        if decided is None:
+            return
 
-    def action_skip_category(self) -> None:
         with self._lock:
-            findings = self._findings
-            idx = self._current_finding_index
-            if not findings or idx >= len(findings):
-                return
-            cat = findings[idx].category
-            for f in findings:
-                if f.category == cat and f.approved is None:
-                    f.approved = False
-            for i, f in enumerate(findings):
-                if f.approved is None:
-                    self._current_finding_index = i
-                    break
+            key = self._finding_key(decided)
+            if approved is None:
+                self._decisions.pop(key, None)
+            else:
+                self._decisions[key] = approved
 
         self._refresh_findings()
         self._update_status()
@@ -453,6 +564,14 @@ class SigilTUI(App):
         try:
             applied = _apply_findings(findings, inventory, self._project_root)
             self._set_status(f"[green]{applied} change(s) written[/green]")
+            written_artifact_ids = {
+                c.artifact_id for f in findings for c in f.proposed_changes
+            }
+            with self._lock:
+                self._decisions = {
+                    k: v for k, v in self._decisions.items()
+                    if not k[1] & written_artifact_ids
+                }
         except Exception as e:
             self._set_status(f"[red]apply error: {e}[/red]")
 
