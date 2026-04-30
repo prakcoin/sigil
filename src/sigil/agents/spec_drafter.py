@@ -47,12 +47,35 @@ Output ONLY valid YAML. No explanations, no markdown fences, no preamble.\
 """
 
 
+def _repair_yaml(yaml_str: str) -> str:
+    """Quote list-item values that contain unquoted colons — the most common LLM YAML mistake.
+
+    Only quotes lines where the text before the colon contains spaces, which distinguishes
+    free-form sentences ("Do not fabricate: cite sources") from YAML mapping keys ("canonical: use").
+    """
+    import re
+    lines = []
+    for line in yaml_str.splitlines():
+        # Value before first colon must contain a space — rules out "key: value" mapping entries
+        m = re.match(r'^(\s*-\s+)([^"\'{][^:]*\s[^:]*:.+)$', line)
+        if m:
+            prefix, value = m.group(1), m.group(2)
+            lines.append(f"{prefix}\"{value.replace(chr(34), chr(92) + chr(34))}\"")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def _clean_vocabulary(yaml_str: str) -> str:
     """Merge duplicate canonicals and deduplicate avoid terms."""
     try:
         doc = yaml.safe_load(yaml_str)
     except Exception:
-        return yaml_str
+        yaml_str = _repair_yaml(yaml_str)
+        try:
+            doc = yaml.safe_load(yaml_str)
+        except Exception:
+            return yaml_str
     if not isinstance(doc, dict) or not isinstance(doc.get("vocabulary"), list):
         return yaml_str
     merged: dict[str, set[str]] = {}

@@ -85,6 +85,8 @@ def _propose_for_finding(finding: Finding, inventory: Inventory, spec: Spec) -> 
 
 def generate_proposals(findings: list[Finding], inventory: Inventory, spec: Spec) -> list[Finding]:
     """Attach proposed changes to each finding. Runs proposals in parallel."""
+    if not findings:
+        return findings
     with ThreadPoolExecutor(max_workers=min(len(findings), 8)) as executor:
         futures = {
             executor.submit(_propose_for_finding, f, inventory, spec): i

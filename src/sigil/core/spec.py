@@ -23,7 +23,11 @@ def load_spec(project_root: Path) -> Spec:
         return Spec()
 
     with open(path) as f:
-        data = yaml.safe_load(f) or {}
+        raw = f.read()
+    try:
+        data = yaml.safe_load(raw) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"sigil.yaml is not valid YAML — fix the file and re-scan.\n{e}") from e
 
     vocab = [
         VocabularyEntry(
