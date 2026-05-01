@@ -17,7 +17,7 @@ from textual.widgets.tree import TreeNode
 from .core.discovery import discover
 from .core.inventory import Inventory
 from .core.models import Artifact, ArtifactType, Finding
-from .core.spec import Spec, load_spec
+from .core.spec import Spec, add_exception, load_spec
 
 
 _TYPE_LABEL = {
@@ -85,6 +85,17 @@ def _diff_markup(original: str, proposed: str) -> tuple[str, str]:
             for line in prop_lines[j1:j2]:
                 after_lines.append(f"[green]{escape(line)}[/green]")
     return "\n".join(before_lines), "\n".join(after_lines)
+
+
+def _filter_excepted(findings: list[Finding], spec: Spec) -> list[Finding]:
+    result = []
+    for f in findings:
+        kept = [c for c in f.proposed_changes if not spec.is_excepted(c.artifact_id, f.category)]
+        if kept:
+            f.proposed_changes = kept
+            f.affected_artifact_ids = [c.artifact_id for c in kept]
+            result.append(f)
+    return result
 
 
 class ArtifactViewer(RichLog):
@@ -173,6 +184,7 @@ class SigilTUI(App):
         self._watcher_stop: threading.Event | None = None
         self._decisions: dict[tuple, bool] = {}  # (category, frozenset(artifact_ids)) → approved
         self._scanning: bool = False
+        self._suppress_yaml_watch: bool = False
 
     @staticmethod
     def _finding_key(f: Finding) -> tuple:
@@ -229,6 +241,7 @@ class SigilTUI(App):
             findings = run_analysis(inventory, spec)
             findings = generate_proposals(findings, inventory, spec)
             findings = [f for f in findings if f.proposed_changes]
+            findings = _filter_excepted(findings, spec)
 
             with self._lock:
                 for f in findings:
@@ -549,28 +562,50 @@ class SigilTUI(App):
 
     def _write_approved(self) -> None:
         with self._lock:
-            findings = [f for f in self._findings if f.approved is True]
+            approved_findings = [f for f in self._findings if f.approved is True]
+            rejected_findings = [f for f in self._findings if f.approved is False]
             inventory = self._inventory
 
-        if not inventory or not findings:
+        if not inventory or (not approved_findings and not rejected_findings):
             return
 
         threading.Thread(
-            target=self._apply_worker, args=(findings, inventory), daemon=True
+            target=self._apply_worker,
+            args=(approved_findings, rejected_findings, inventory),
+            daemon=True,
         ).start()
 
-    def _apply_worker(self, findings: list[Finding], inventory: Inventory) -> None:
+    def _apply_worker(self, approved: list[Finding], rejected: list[Finding], inventory: Inventory) -> None:
         from .cli import _apply_findings
         try:
-            applied = _apply_findings(findings, inventory, self._project_root)
-            self._set_status(f"[green]{applied} change(s) written[/green]")
-            written_artifact_ids = {
-                c.artifact_id for f in findings for c in f.proposed_changes
+            applied = _apply_findings(approved, inventory, self._project_root)
+
+            if rejected:
+                with self._lock:
+                    self._suppress_yaml_watch = True
+                for f in rejected:
+                    for change in f.proposed_changes:
+                        add_exception(
+                            self._project_root,
+                            change.artifact_id,
+                            f.category.value,
+                            reason=f.description,
+                        )
+
+            parts = []
+            if applied:
+                parts.append(f"{applied} change(s) written")
+            if rejected:
+                parts.append(f"{len(rejected)} exception(s) saved")
+            self._set_status(f"[green]{', '.join(parts)}[/green]")
+
+            decided_artifact_ids = {
+                c.artifact_id for f in approved + rejected for c in f.proposed_changes
             }
             with self._lock:
                 self._decisions = {
                     k: v for k, v in self._decisions.items()
-                    if not k[1] & written_artifact_ids
+                    if not k[1] & decided_artifact_ids
                 }
         except Exception as e:
             self._set_status(f"[red]apply error: {e}[/red]")
@@ -584,6 +619,11 @@ class SigilTUI(App):
         self._watcher_stop = watcher.start(self._project_root, self._on_files_changed)
 
     def _on_files_changed(self, changed: set[Path]) -> None:
+        if all(p.name == "sigil.yaml" for p in changed):
+            with self._lock:
+                if self._suppress_yaml_watch:
+                    self._suppress_yaml_watch = False
+                    return
         self._set_status("[yellow]change detected — rescanning...[/yellow]")
         self.call_from_thread(self._do_scan, changed)
 

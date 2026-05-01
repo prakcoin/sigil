@@ -68,15 +68,29 @@ class VocabularyEntry:
 
 
 @dataclass
+class SpecException:
+    artifact_id: str
+    category: str
+    reason: str = ""
+
+
+@dataclass
 class Spec:
     tone: str = ""
     vocabulary: list[VocabularyEntry] = field(default_factory=list)
     required_constraints: list[str] = field(default_factory=list)
     examples: dict[str, str] = field(default_factory=dict)
+    exceptions: list[SpecException] = field(default_factory=list)
 
     def vocabulary_set(self) -> dict[str, list[str]]:
         """Return {canonical: [avoid, ...]} for fast lookup."""
         return {e.canonical: e.avoid for e in self.vocabulary}
+
+    def is_excepted(self, artifact_id: str, category: "FindingCategory") -> bool:
+        return any(
+            e.artifact_id == artifact_id and e.category == category.value
+            for e in self.exceptions
+        )
 
 
 @dataclass
